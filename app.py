@@ -1,114 +1,163 @@
-import streamlit as st
+import re
+from datetime import datetime, timezone
 import requests
 import pandas as pd
+import streamlit as st
 import plotly.express as px
-from datetime import datetime
 
-st.set_page_config(page_title='Wall Street Spider', page_icon='🕷️', layout='wide')
-st.markdown('''<style>.stApp{background:#0b1220;color:#f8fafc}div.stButton>button[kind="primary"]{background:#16a34a;border:0;font-weight:700}h1,h2,h3{color:#e2e8f0}</style>''', unsafe_allow_html=True)
-st.title('🕷️ Wall Street Spider')
-st.caption('Your one-button SEC financial report crawler • Free public filings • No trading or investment advice')
-
-HEADERS={'User-Agent':'WallStreetSpider Personal Research contact spider-research@example.com','Accept-Encoding':'gzip, deflate','Host':'www.sec.gov'}
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def tickers():
-    r=requests.get('https://www.sec.gov/files/company_tickers.json',headers={k:v for k,v in HEADERS.items() if k!='Host'},timeout=25)
-    r.raise_for_status()
-    return {x['ticker'].upper():x for x in r.json().values()}
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def company_facts(cik):
-    r=requests.get(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json',headers={k:v for k,v in HEADERS.items() if k!='Host'},timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-FIELDS={
-'Revenue':['RevenueFromContractWithCustomerExcludingAssessedTax','Revenues','SalesRevenueNet','RevenueFromContractWithCustomerIncludingAssessedTax'],
-'Net income':['NetIncomeLoss'],
-'Operating income':['OperatingIncomeLoss'],
-'Operating cash flow':['NetCashProvidedByUsedInOperatingActivities'],
-'Capital expenditures':['PaymentsToAcquirePropertyPlantAndEquipment'],
-'Total assets':['Assets'],
-'Total liabilities':['Liabilities'],
-'Cash':['CashAndCashEquivalentsAtCarryingValue'],
-'Long-term debt':['LongTermDebtCurrent','LongTermDebtNoncurrent','LongTermDebt'],
+st.set_page_config(page_title='Wall Street Spider PRO',page_icon='🕷️',layout='wide',initial_sidebar_state='collapsed')
+st.markdown('''<style>.stApp{background:#0b1220;color:#eef2ff}.block-container{max-width:1050px;padding-top:1.4rem}div.stButton>button[kind="primary"],div.stFormSubmitButton>button[kind="primary"]{background:#e34b65;color:white;border:0;font-weight:800;min-height:3rem}h1,h2,h3{color:#f1f5f9}div[data-testid="stMetric"]{background:#172338;padding:14px;border-radius:12px}div[data-testid="stMetricLabel"]{color:#cbd5e1}</style>''',unsafe_allow_html=True)
+st.title('🕷️ Wall Street Spider PRO')
+st.caption('⚡ Quantum Intelligence Edition · SEC-powered research · No account, API key, or paid AI required')
+st.info('Quantum Intelligence is a brand name for transparent, rule-based financial analysis — not quantum computing, generative AI, price prediction, or investment advice.')
+HEAD={'User-Agent':'Personal WallStreetSpider Research support contact: wallstreetspider-research@example.com','Accept-Encoding':'gzip, deflate'}
+@st.cache_data(ttl=86400,show_spinner=False)
+def directory():
+ r=requests.get('https://www.sec.gov/files/company_tickers.json',headers=HEAD,timeout=25);r.raise_for_status()
+ return {v['ticker'].upper():v for v in r.json().values()}
+@st.cache_data(ttl=3600,show_spinner=False)
+def facts_for(cik):
+ r=requests.get(f'https://data.sec.gov/api/xbrl/companyfacts/CIK{int(cik):010d}.json',headers=HEAD,timeout=30);r.raise_for_status();return r.json()
+TAGS={
+ 'Revenue':['RevenueFromContractWithCustomerExcludingAssessedTax','RevenueFromContractWithCustomerIncludingAssessedTax','Revenues','SalesRevenueNet'],
+ 'Net income':['NetIncomeLoss'],'Operating income':['OperatingIncomeLoss'],
+ 'Operating cash flow':['NetCashProvidedByUsedInOperatingActivities'],
+ 'Capital expenditures':['PaymentsToAcquirePropertyPlantAndEquipment'],
+ 'Assets':['Assets'],'Liabilities':['Liabilities'],
+ 'Cash':['CashAndCashEquivalentsAtCarryingValue'],
+ 'Long-term debt':['LongTermDebtNoncurrent','LongTermDebt'],
 }
-FLOW={'Revenue','Net income','Operating income','Operating cash flow','Capital expenditures'}
-
-def extract(facts, label, form):
-    us=facts.get('facts',{}).get('us-gaap',{})
-    for tag in FIELDS[label]:
-        obj=us.get(tag)
-        if not obj: continue
-        vals=obj.get('units',{}).get('USD',[])
-        records=[]
-        for x in vals:
-            if x.get('form') not in (['10-K'] if form=='Annual' else ['10-Q']): continue
-            if not all(k in x for k in ('start','end','val','filed')) and label in FLOW: continue
-            if 'end' not in x or 'val' not in x or 'filed' not in x: continue
-            if label in FLOW:
-                days=(pd.Timestamp(x['end'])-pd.Timestamp(x['start'])).days
-                if form=='Annual' and not 330<=days<=380:continue
-                if form=='Quarterly' and not 70<=days<=110:continue
-            records.append(x)
-        if records:
-            records.sort(key=lambda x:(x['end'],x['filed']))
-            latest={}
-            for x in records:latest[x['end']]=x['val']
-            return pd.Series(latest,dtype='float64').sort_index().tail(8)
-    return pd.Series(dtype='float64')
-
-with st.form('analyze'):
-    a,b=st.columns([3,1])
-    with a: symbol=st.text_input('Stock ticker',value='COST',placeholder='e.g. COST, AAPL, NVDA').strip().upper()
-    with b: period=st.selectbox('Report type',['Annual','Quarterly'])
-    clicked=st.form_submit_button('🕷️ ANALYZE STOCK',type='primary',use_container_width=True)
-
-if clicked:
-    if not symbol or not symbol.replace('-','').replace('.','').isalnum():
-        st.error('Enter a valid stock ticker, like COST or AAPL.')
-    else:
-        try:
-            with st.spinner('Spider is collecting official SEC filings…'):
-                directory=tickers()
-                match=directory.get(symbol) or directory.get(symbol.replace('.','-'))
-                if not match:
-                    st.error(f'No SEC company found for {symbol}. Check the ticker and try again.')
-                    st.stop()
-                facts=company_facts(match['cik_str'])
-            st.success(f"Report ready: {match['title']} ({symbol})")
-            st.caption(f"Source: SEC EDGAR XBRL company facts • CIK {match['cik_str']:010d} • Accessed {datetime.now().strftime('%Y-%m-%d %H:%M')} • USD")
-            series={k:extract(facts,k,period) for k in FIELDS}
-            metrics=['Revenue','Net income','Operating cash flow','Total assets']
-            cols=st.columns(4)
-            for col,name in zip(cols,metrics):
-                s=series[name]
-                col.metric(name, f'${s.iloc[-1]/1e9:,.2f}B' if not s.empty else 'N/A')
-            st.subheader('Financial trends')
-            for name in ['Revenue','Net income','Operating cash flow']:
-                s=series[name]
-                if not s.empty:
-                    df=pd.DataFrame({'Period':s.index,'USD billions':s.values/1e9})
-                    fig=px.bar(df,x='Period',y='USD billions',title=name,template='plotly_dark')
-                    fig.update_layout(paper_bgcolor='#0b1220',plot_bgcolor='#0b1220',margin=dict(t=55,b=25))
-                    st.plotly_chart(fig,use_container_width=True)
-            st.subheader('Latest reported figures')
-            rows=[]
-            for name,s in series.items():
-                if not s.empty:rows.append({'Metric':name,'Period ending':s.index[-1],'USD':int(s.iloc[-1])})
-            if rows:
-                table=pd.DataFrame(rows)
-                st.dataframe(table,hide_index=True,use_container_width=True,column_config={'USD':st.column_config.NumberColumn(format='$%d')})
-                st.download_button('⬇️ Download report (CSV)',data=table.to_csv(index=False).encode(),file_name=f'{symbol}_{period.lower()}_spider.csv',mime='text/csv')
-            else:st.warning('This company does not provide compatible standard SEC XBRL figures for this report type.')
-            st.info('Figures may be missing or differ from company presentations because SEC XBRL tags and reporting periods vary. Quarterly charts use standalone three-month periods only. This is research data, not a buy/sell signal.')
-            st.markdown(f"[View official SEC company filings](https://www.sec.gov/edgar/browse/?CIK={match['cik_str']}&owner=exclude)")
-        except requests.HTTPError as e:
-            st.error(f'SEC data request was blocked or unavailable ({e.response.status_code}). Try again later. Some hosting services are restricted by SEC.')
-        except (requests.RequestException,ValueError,KeyError) as e:
-            st.error(f'Could not load the report: {e}. Check your connection and retry.')
+FLOWS={'Revenue','Net income','Operating income','Operating cash flow','Capital expenditures'}
+def series_for(facts,label,period):
+ us=facts.get('facts',{}).get('us-gaap',{})
+ today=pd.Timestamp.now(tz='UTC').tz_localize(None).normalize()
+ for tag in TAGS[label]:
+  obj=us.get(tag,{});vals=obj.get('units',{}).get('USD',[]);rows=[]
+  for x in vals:
+   if x.get('form') not in (('10-K',) if period=='Annual' else ('10-Q',)):continue
+   if not all(k in x for k in ('end','filed','val')):continue
+   try:end=pd.Timestamp(x['end']);filed=pd.Timestamp(x['filed'])
+   except (ValueError,TypeError):continue
+   if end>today or filed>today:continue
+   if label in FLOWS:
+    if 'start' not in x:continue
+    days=(end-pd.Timestamp(x['start'])).days
+    if not ((330<=days<=380) if period=='Annual' else (70<=days<=110)):continue
+   elif period=='Annual' and x.get('form')!='10-K':continue
+   rows.append((end,filed,float(x['val'])))
+  if rows:
+   best={}
+   for end,filed,value in rows:
+    if end not in best or filed>best[end][0]:best[end]=(filed,value)
+   return pd.Series({d:v[1] for d,v in sorted(best.items())},dtype=float).tail(8)
+ return pd.Series(dtype=float)
+def load(ticker,period):
+ symbol=ticker.strip().upper()
+ if not re.fullmatch(r'[A-Z0-9.\-]{1,12}',symbol):raise ValueError('Enter a ticker such as COST or NVDA.')
+ entry=directory().get(symbol) or directory().get(symbol.replace('.','-'))
+ if not entry:raise ValueError(f'{symbol} was not found in the SEC ticker directory.')
+ facts=facts_for(entry['cik_str'])
+ return entry,{key:series_for(facts,key,period) for key in TAGS}
+def last(s):return None if s.empty else float(s.iloc[-1])
+def aligned_ratio(a,b):
+ common=a.index.intersection(b.index)
+ if len(common)==0:return None
+ x=float(a.loc[common[-1]]);y=float(b.loc[common[-1]])
+ return x/y if y else None
+def growth(s):
+ if len(s)<2:return None
+ a,b=float(s.iloc[-2]),float(s.iloc[-1]);return (b/a-1) if a>0 else None
+def fmt(v):
+ if v is None:return 'N/A'
+ if abs(v)>=1e12:return f'${v/1e12:,.2f}T'
+ if abs(v)>=1e9:return f'${v/1e9:,.2f}B'
+ if abs(v)>=1e6:return f'${v/1e6:,.1f}M'
+ return f'${v:,.0f}'
+def pct(v):return 'N/A' if v is None else f'{v:.1%}'
+def assessment(s):
+ rg=growth(s['Revenue']);margin=aligned_ratio(s['Net income'],s['Revenue']);liab=aligned_ratio(s['Liabilities'],s['Assets']);cash=last(s['Operating cash flow']);capex=last(s['Capital expenditures'])
+ fcf=cash-abs(capex) if cash is not None and capex is not None else None
+ checks=[('Revenue growth',rg,lambda x:x>0,'Growing revenue','Revenue not growing'),('Profit margin',margin,lambda x:x>0.10,'Margin above 10%','Margin at or below 10%'),('Liabilities / assets',liab,lambda x:x<0.65,'Liabilities below 65% of assets','Liabilities at least 65% of assets'),('Operating cash flow',cash,lambda x:x>0,'Positive operating cash flow','Nonpositive operating cash flow'),('Free cash flow proxy',fcf,lambda x:x>0,'Positive operating cash flow less capex','Nonpositive operating cash flow less capex')]
+ valid=[(name,value,test,good,bad) for name,value,test,good,bad in checks if value is not None]
+ score=None if len(valid)<3 else round(100*sum(test(value) for _,value,test,_,_ in valid)/len(valid))
+ notes=[('✅ ' if test(value) else '⚠️ ')+(good if test(value) else bad) for _,value,test,good,bad in valid]
+ return score,notes,{'Revenue growth':rg,'Net margin':margin,'Liabilities / assets':liab,'Free cash flow proxy':fcf},len(valid)
+def draw_report(symbol,entry,s,period):
+ st.success(f"Report ready: {entry['title']} ({symbol})")
+ st.caption(f"SEC EDGAR company facts · CIK {int(entry['cik_str']):010d} · Retrieved {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC · USD")
+ cols=st.columns(2)
+ for i,key in enumerate(['Revenue','Net income','Operating cash flow','Assets']):cols[i%2].metric(key,fmt(last(s[key])))
+ score,notes,ratios,count=assessment(s)
+ st.subheader('⚡ Quantum Intelligence health check')
+ if score is None:st.warning('Insufficient comparable figures for a score. No score is better than a misleading score.')
+ else:
+  st.metric('Financial checklist score',f'{score}/100');st.progress(score/100)
+  st.caption(f'Equal-weight checklist: {count} available tests, each pass earns equal points. Not a buy/sell rating. Thresholds are illustrative and may not fit banks, insurers, or every industry.')
+ for note in notes:st.write(note)
+ a,b,c=st.columns(3);a.metric('Revenue growth',pct(ratios['Revenue growth']));b.metric('Net margin',pct(ratios['Net margin']));c.metric('Liabilities / assets',pct(ratios['Liabilities / assets']))
+ st.caption('Growth compares the last two available periods, not necessarily the same fiscal period. Ratios only use matching period-end dates; missing values remain N/A.')
+ st.subheader('📊 Financial trends')
+ for key in ['Revenue','Net income','Operating cash flow']:
+  data=s[key]
+  if not data.empty:
+   df=pd.DataFrame({'Period':data.index.strftime('%Y-%m-%d'),'USD billions':data.values/1e9})
+   fig=px.bar(df,x='Period',y='USD billions',title=key,template='plotly_dark',color_discrete_sequence=['#7184ff'])
+   fig.update_layout(paper_bgcolor='#0b1220',plot_bgcolor='#0b1220',margin=dict(t=55,b=20),xaxis_tickangle=-35)
+   st.plotly_chart(fig,use_container_width=True)
+ st.subheader('📥 Export the numbers')
+ rows=[{'Metric':k,'Period end':v.index[-1].date().isoformat(),'USD':round(float(v.iloc[-1]),2)} for k,v in s.items() if not v.empty]
+ if rows:
+  df=pd.DataFrame(rows);st.dataframe(df,hide_index=True,use_container_width=True)
+  st.download_button('Download CSV report',df.to_csv(index=False).encode(),file_name=f'{symbol}_{period.lower()}_spider_pro.csv',mime='text/csv')
+ st.markdown(f"[Open original SEC filings](https://www.sec.gov/edgar/browse/?CIK={int(entry['cik_str'])}&owner=exclude)")
+ st.caption('XBRL tags can vary by issuer. Debt here is long-term debt only, not total borrowings. Free cash flow is a simple proxy. Quarterly figures use standalone ~3-month periods and may be missing. Figures are not independently audited by this app.')
+mode=st.radio('Choose what Spider should do',['🕷️ Analyze','⚖️ Compare','🔎 Scan'],horizontal=True)
+if mode=='🕷️ Analyze':
+ with st.form('analyze'):
+  symbol=st.text_input('Stock ticker',value='COST',placeholder='COST, AAPL, NVDA').strip().upper()
+  period=st.selectbox('Financial report',['Annual','Quarterly'])
+  run=st.form_submit_button('🕷️ ANALYZE STOCK',type='primary',use_container_width=True)
+ if run:
+  try:
+   with st.spinner('Reading official SEC data…'):entry,s=load(symbol,period)
+   draw_report(symbol,entry,s,period)
+  except requests.HTTPError as e:st.error(f'SEC returned HTTP {e.response.status_code}. SEC may block cloud hosting; retry later.')
+  except (requests.RequestException,ValueError,KeyError,TypeError) as e:st.error(f'Could not complete analysis: {e}')
+elif mode=='⚖️ Compare':
+ with st.form('compare'):
+  symbols=st.text_input('Compare tickers (2–3, separated by commas)','COST,WMT').upper()
+  run=st.form_submit_button('⚖️ COMPARE COMPANIES',type='primary',use_container_width=True)
+ if run:
+  picks=list(dict.fromkeys(x.strip() for x in symbols.split(',') if x.strip()))
+  if not 2<=len(picks)<=3:st.warning('Enter 2 or 3 different tickers.')
+  else:
+   rows=[]
+   for symbol in picks:
+    try:
+     with st.spinner(f'Reading {symbol}…'):entry,s=load(symbol,'Annual')
+     score,notes,ratios,count=assessment(s)
+     rows.append({'Ticker':symbol,'Company':entry['title'],'Revenue':fmt(last(s['Revenue'])),'Net income':fmt(last(s['Net income'])),'Revenue growth':pct(ratios['Revenue growth']),'Net margin':pct(ratios['Net margin']),'Checklist score':score if score is not None else 'N/A'})
+    except (requests.RequestException,ValueError,KeyError,TypeError) as e:st.warning(f'{symbol}: {e}')
+   if rows:
+    st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+    st.caption('Comparisons are based on latest available annual filings, which may have different fiscal year ends. Scores are educational checklists, not investment recommendations.')
 else:
-    st.markdown('### How it works')
-    st.write('Type a ticker, choose annual or quarterly, and press **ANALYZE STOCK**. The spider collects financial facts from official US SEC filings, creates charts, and lets you download the numbers.')
-    st.caption('Best for US-listed companies that file standard SEC XBRL statements. No login or brokerage account needed.')
+ st.write('Scan a small starter watchlist for companies with positive revenue growth and operating cash flow. This is not a full-market scanner.')
+ with st.form('scan'):
+  watch=st.text_input('Watchlist (up to 5 tickers, comma-separated)','AAPL,MSFT,NVDA,COST,WMT').upper()
+  run=st.form_submit_button('🔎 SCAN WATCHLIST',type='primary',use_container_width=True)
+ if run:
+  picks=list(dict.fromkeys(x.strip() for x in watch.split(',') if x.strip()))
+  if not 1<=len(picks)<=5:st.warning('Choose 1 to 5 tickers to avoid overloading SEC servers.')
+  else:
+   rows=[]
+   for symbol in picks:
+    try:
+     with st.spinner(f'Scanning {symbol}…'):entry,s=load(symbol,'Annual')
+     rg=growth(s['Revenue']);cash=last(s['Operating cash flow']);score,_,_,_=assessment(s)
+     rows.append({'Ticker':symbol,'Company':entry['title'],'Revenue growth':pct(rg),'Operating cash flow':fmt(cash),'Checklist score':score if score is not None else 'N/A','Passes scan':('Yes' if rg is not None and cash is not None and rg>0 and cash>0 else 'No / unknown')})
+    except (requests.RequestException,ValueError,KeyError,TypeError) as e:st.warning(f'{symbol}: {e}')
+   if rows:st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+   st.caption('Scan rules are simplistic and not proof of quality or future returns. SEC data may be delayed and issuers report on different schedules.')
+st.divider()
+st.caption('Personal research only · Public SEC EDGAR data · Not financial advice · No brokerage connection or automatic trading')
